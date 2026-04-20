@@ -4,8 +4,12 @@ use serde_json::Value as JsonValue;
 /// Remove frame property fields from all objects in the JSON tree
 ///
 /// Recursively traverses the JSON tree and removes frame-specific fields:
-/// - "frameMaskDisabled" - Frame mask disabled flag
 /// - "targetAspectRatio" - Target aspect ratio for frame
+///
+/// `frameMaskDisabled` is preserved: downstream pixel renderers (fig2psd)
+/// need to know whether the frame clips its descendants so they can attach
+/// a group mask on the emitted PSD layer. CSS rendering can ignore the
+/// flag because `overflow: hidden` is already the default in many layouts.
 ///
 /// These fields contain frame-specific configuration that is not needed for
 /// basic HTML/CSS rendering.
@@ -43,8 +47,8 @@ pub fn remove_frame_properties(tree: &mut JsonValue) -> Result<()> {
 fn transform_recursive(value: &mut JsonValue) -> Result<()> {
     match value {
         JsonValue::Object(map) => {
-            // Remove frame property fields if they exist
-            map.remove("frameMaskDisabled");
+            // Remove frame property fields if they exist. `frameMaskDisabled`
+            // is kept — see module docs.
             map.remove("targetAspectRatio");
 
             // Recurse into all remaining values
@@ -75,7 +79,7 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn test_remove_frame_mask_disabled() {
+    fn test_preserve_frame_mask_disabled() {
         let mut tree = json!({
             "name": "Frame",
             "frameMaskDisabled": false,
@@ -84,7 +88,9 @@ mod tests {
 
         remove_frame_properties(&mut tree).unwrap();
 
-        assert!(tree.get("frameMaskDisabled").is_none());
+        // frameMaskDisabled is kept — pixel renderers need it to decide
+        // whether to clip descendants to the frame's shape.
+        assert_eq!(tree.get("frameMaskDisabled").and_then(|v| v.as_bool()), Some(false));
         assert_eq!(tree.get("name").unwrap().as_str(), Some("Frame"));
         assert_eq!(tree.get("visible").unwrap().as_bool(), Some(true));
     }
@@ -110,7 +116,7 @@ mod tests {
     }
 
     #[test]
-    fn test_remove_both_frame_properties() {
+    fn test_remove_target_aspect_ratio_keeps_mask_disabled() {
         let mut tree = json!({
             "name": "Frame",
             "frameMaskDisabled": false,
@@ -125,7 +131,7 @@ mod tests {
 
         remove_frame_properties(&mut tree).unwrap();
 
-        assert!(tree.get("frameMaskDisabled").is_none());
+        assert_eq!(tree.get("frameMaskDisabled").and_then(|v| v.as_bool()), Some(false));
         assert!(tree.get("targetAspectRatio").is_none());
         assert_eq!(tree.get("name").unwrap().as_str(), Some("Frame"));
         assert_eq!(tree.get("type").unwrap().as_str(), Some("FRAME"));
@@ -159,14 +165,17 @@ mod tests {
 
         remove_frame_properties(&mut tree).unwrap();
 
-        // Check first nested element
-        assert!(tree["children"][0].get("frameMaskDisabled").is_none());
+        // frameMaskDisabled preserved on Child1
+        assert_eq!(
+            tree["children"][0].get("frameMaskDisabled").and_then(|v| v.as_bool()),
+            Some(false)
+        );
         assert_eq!(
             tree["children"][0].get("name").unwrap().as_str(),
             Some("Child1")
         );
 
-        // Check deeply nested element
+        // targetAspectRatio removed on DeepChild
         let deep_child = &tree["children"][1]["children"][0];
         assert!(deep_child.get("targetAspectRatio").is_none());
         assert_eq!(deep_child.get("name").unwrap().as_str(), Some("DeepChild"));
@@ -211,8 +220,8 @@ mod tests {
 
         remove_frame_properties(&mut tree).unwrap();
 
-        // Frame properties removed
-        assert!(tree.get("frameMaskDisabled").is_none());
+        // frameMaskDisabled preserved
+        assert_eq!(tree.get("frameMaskDisabled").and_then(|v| v.as_bool()), Some(false));
 
         // Other fields preserved
         assert_eq!(tree.get("name").unwrap().as_str(), Some("Ecran 1"));
@@ -247,14 +256,20 @@ mod tests {
 
         remove_frame_properties(&mut tree).unwrap();
 
-        // All frame properties in array should be removed
-        assert!(tree["items"][0].get("frameMaskDisabled").is_none());
+        // frameMaskDisabled preserved everywhere; targetAspectRatio removed.
+        assert_eq!(
+            tree["items"][0].get("frameMaskDisabled").and_then(|v| v.as_bool()),
+            Some(false)
+        );
         assert_eq!(
             tree["items"][0].get("name").unwrap().as_str(),
             Some("Frame1")
         );
 
-        assert!(tree["items"][1].get("frameMaskDisabled").is_none());
+        assert_eq!(
+            tree["items"][1].get("frameMaskDisabled").and_then(|v| v.as_bool()),
+            Some(true)
+        );
         assert_eq!(
             tree["items"][1].get("name").unwrap().as_str(),
             Some("Frame2")
@@ -268,7 +283,7 @@ mod tests {
     }
 
     #[test]
-    fn test_frame_mask_disabled_different_values() {
+    fn test_frame_mask_disabled_preserved_for_both_values() {
         let mut tree = json!({
             "frame1": {
                 "frameMaskDisabled": false,
@@ -282,11 +297,18 @@ mod tests {
 
         remove_frame_properties(&mut tree).unwrap();
 
-        // Both true and false values should be removed
-        assert!(tree["frame1"].get("frameMaskDisabled").is_none());
+        // Both true and false values are preserved — the renderer needs them
+        // to know which frames clip their descendants.
+        assert_eq!(
+            tree["frame1"].get("frameMaskDisabled").and_then(|v| v.as_bool()),
+            Some(false)
+        );
         assert_eq!(tree["frame1"].get("name").unwrap().as_str(), Some("Frame1"));
 
-        assert!(tree["frame2"].get("frameMaskDisabled").is_none());
+        assert_eq!(
+            tree["frame2"].get("frameMaskDisabled").and_then(|v| v.as_bool()),
+            Some(true)
+        );
         assert_eq!(tree["frame2"].get("name").unwrap().as_str(), Some("Frame2"));
     }
 
