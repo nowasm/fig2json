@@ -99,12 +99,19 @@ fn should_preserve_geometry(value: &JsonValue) -> bool {
 
 /// Recursively remove geometry fields from a JSON value
 fn transform_recursive(value: &mut JsonValue) -> Result<()> {
-    // Check if we should preserve geometry BEFORE matching (to avoid borrow checker issues)
-    let preserve = should_preserve_geometry(value);
+    transform_inner(value, false)
+}
+
+/// `inside_derived` is true when this value lives under an ancestor's
+/// `derivedSymbolData` array. Component instances bake their expanded child
+/// geometry there, and downstream renderers (fig2psd) rely on it to draw
+/// the instance — so geometry inside that subtree must survive even if the
+/// owning node isn't an icon/image.
+fn transform_inner(value: &mut JsonValue, inside_derived: bool) -> Result<()> {
+    let preserve = inside_derived || should_preserve_geometry(value);
 
     match value {
         JsonValue::Object(map) => {
-            // Only remove geometry if this is not an icon/image node
             if !preserve {
                 map.remove("fillGeometry");
                 map.remove("strokeGeometry");
@@ -112,23 +119,20 @@ fn transform_recursive(value: &mut JsonValue) -> Result<()> {
                 map.remove("styleID");
             }
 
-            // Recurse into all remaining values
             let keys: Vec<String> = map.keys().cloned().collect();
             for key in keys {
+                let child_inside = inside_derived || key == "derivedSymbolData";
                 if let Some(val) = map.get_mut(&key) {
-                    transform_recursive(val)?;
+                    transform_inner(val, child_inside)?;
                 }
             }
         }
         JsonValue::Array(arr) => {
-            // Recurse into array elements
             for val in arr.iter_mut() {
-                transform_recursive(val)?;
+                transform_inner(val, inside_derived)?;
             }
         }
-        _ => {
-            // Primitives - nothing to do
-        }
+        _ => {}
     }
 
     Ok(())
@@ -583,13 +587,38 @@ mod tests {
 
         remove_geometry_fields(&mut tree).unwrap();
 
-        // Node-level geometry should be preserved due to exportSettings
-        // But derivedSymbolData is an array, so it gets recursed differently
-        // The geometry in derivedSymbolData should be removed because derivedSymbolData elements
-        // themselves don't have exportSettings
+        // derivedSymbolData holds an instance's expanded child geometry. That
+        // is the only place the cursor/icon shapes live for a component
+        // instance, so the transform preserves fillGeometry/strokeGeometry
+        // everywhere inside the derivedSymbolData subtree.
         assert!(tree["derivedSymbolData"][0]
             .get("fillGeometry")
-            .is_none());
+            .is_some());
+    }
+
+    #[test]
+    fn test_preserve_geometry_inside_derived_symbol_data_even_for_plain_nodes() {
+        // No exportSettings, no "icon/" name — still preserved because the
+        // shape lives under derivedSymbolData.
+        let mut tree = json!({
+            "name": "Cursor Labels",
+            "derivedSymbolData": [
+                { "size": { "x": 50.0, "y": 50.0 } },
+                {
+                    "fillGeometry": [
+                        { "commands": ["M", 0.0, 0.0, "L", 10.0, 10.0, "Z"] }
+                    ],
+                    "strokeGeometry": [
+                        { "commands": ["M", 0.0, 0.0, "L", 10.0, 10.0] }
+                    ]
+                }
+            ]
+        });
+
+        remove_geometry_fields(&mut tree).unwrap();
+
+        assert!(tree["derivedSymbolData"][1].get("fillGeometry").is_some());
+        assert!(tree["derivedSymbolData"][1].get("strokeGeometry").is_some());
     }
 
     #[test]

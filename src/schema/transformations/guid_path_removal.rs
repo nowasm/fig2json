@@ -39,28 +39,35 @@ pub fn remove_guid_paths(tree: &mut JsonValue) -> Result<()> {
 
 /// Recursively remove guidPath fields from a JSON value
 fn transform_recursive(value: &mut JsonValue) -> Result<()> {
+    transform_inner(value, false)
+}
+
+/// `inside_derived` is true when this value lives under an ancestor's
+/// `derivedSymbolData` array. Entries there are flattened baked-out children
+/// of a component instance and their only surviving ancestry record is
+/// `guidPath.guids`, so downstream renderers need it to reconstruct the
+/// instance tree and compose transforms. Preserve `guidPath` in that subtree.
+fn transform_inner(value: &mut JsonValue, inside_derived: bool) -> Result<()> {
     match value {
         JsonValue::Object(map) => {
-            // Remove the "guidPath" field if it exists
-            map.remove("guidPath");
+            if !inside_derived {
+                map.remove("guidPath");
+            }
 
-            // Recurse into all remaining values
             let keys: Vec<String> = map.keys().cloned().collect();
             for key in keys {
+                let child_inside = inside_derived || key == "derivedSymbolData";
                 if let Some(val) = map.get_mut(&key) {
-                    transform_recursive(val)?;
+                    transform_inner(val, child_inside)?;
                 }
             }
         }
         JsonValue::Array(arr) => {
-            // Recurse into array elements
             for val in arr.iter_mut() {
-                transform_recursive(val)?;
+                transform_inner(val, inside_derived)?;
             }
         }
-        _ => {
-            // Primitives - nothing to do
-        }
+        _ => {}
     }
 
     Ok(())
@@ -213,7 +220,10 @@ mod tests {
     }
 
     #[test]
-    fn test_remove_guid_path_in_derived_symbol_data() {
+    fn test_preserve_guid_path_in_derived_symbol_data() {
+        // guidPath is the only surviving ancestry signal for baked-out
+        // component-instance children — keep it so renderers can nest the
+        // flat derivedSymbolData array back into a tree.
         let mut tree = json!({
             "derivedSymbolData": [
                 {
@@ -236,8 +246,8 @@ mod tests {
 
         remove_guid_paths(&mut tree).unwrap();
 
-        assert!(tree["derivedSymbolData"][0].get("guidPath").is_none());
-        assert!(tree["derivedSymbolData"][1].get("guidPath").is_none());
+        assert!(tree["derivedSymbolData"][0].get("guidPath").is_some());
+        assert!(tree["derivedSymbolData"][1].get("guidPath").is_some());
         assert_eq!(tree["derivedSymbolData"][0]["size"]["x"].as_f64(), Some(100.0));
         assert_eq!(
             tree["derivedSymbolData"][1]["transform"]["x"].as_f64(),
