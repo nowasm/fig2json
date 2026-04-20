@@ -34,32 +34,38 @@ pub fn remove_symbol_id_fields(tree: &mut JsonValue) -> Result<()> {
 }
 
 fn transform_recursive(value: &mut JsonValue) -> Result<()> {
+    transform_inner(value, false)
+}
+
+/// `inside_symbol_data` is true when this value lives inside a node's
+/// `symbolData` object. The `symbolID` there is the link from an INSTANCE
+/// to its COMPONENT master (by guid), so the plain-guid form must survive
+/// for renderers that hydrate instances from the component tree.
+fn transform_inner(value: &mut JsonValue, inside_symbol_data: bool) -> Result<()> {
     match value {
         JsonValue::Object(map) => {
-            // Check if this object has a "symbolID" field that should be removed
-            if let Some(symbol_id_value) = map.get("symbolID") {
-                if should_remove_symbol_id(symbol_id_value) {
-                    map.remove("symbolID");
+            if !inside_symbol_data {
+                if let Some(symbol_id_value) = map.get("symbolID") {
+                    if should_remove_symbol_id(symbol_id_value) {
+                        map.remove("symbolID");
+                    }
                 }
             }
 
-            // Recurse into all remaining values
             let keys: Vec<String> = map.keys().cloned().collect();
             for key in keys {
+                let child_inside = inside_symbol_data || key == "symbolData";
                 if let Some(val) = map.get_mut(&key) {
-                    transform_recursive(val)?;
+                    transform_inner(val, child_inside)?;
                 }
             }
         }
         JsonValue::Array(arr) => {
-            // Recurse into array elements
             for val in arr.iter_mut() {
-                transform_recursive(val)?;
+                transform_inner(val, inside_symbol_data)?;
             }
         }
-        _ => {
-            // Primitives - nothing to do
-        }
+        _ => {}
     }
 
     Ok(())
@@ -297,6 +303,22 @@ mod tests {
         let expected = input.clone();
         remove_symbol_id_fields(&mut input).unwrap();
 
+        assert_eq!(input, expected);
+    }
+
+    #[test]
+    fn test_preserve_symbol_id_inside_symbol_data() {
+        // symbolData.symbolID is the INSTANCE → COMPONENT link. Plain guid
+        // form must survive even though it has only localID/sessionID.
+        let mut input = json!({
+            "name": "Instance",
+            "symbolData": {
+                "symbolID": { "localID": 10, "sessionID": 20 },
+                "symbolOverrides": []
+            }
+        });
+        let expected = input.clone();
+        remove_symbol_id_fields(&mut input).unwrap();
         assert_eq!(input, expected);
     }
 

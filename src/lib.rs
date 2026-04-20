@@ -155,7 +155,16 @@ pub fn convert(bytes: &[u8], base_dir: Option<&std::path::Path>) -> Result<serde
         .ok_or_else(|| FigError::ZipError("No nodeChanges found in decoded data".to_string()))?
         .clone();
 
-    let mut document = schema::build_tree(node_changes)?;
+    // Build the visible document plus any COMPONENT master subtrees that
+    // live outside it. The rest of the transformations walk `document`
+    // recursively, so they naturally process both subtrees through the
+    // wrapping object.
+    let mut document = schema::build_tree_with_components(node_changes)?;
+    // Stamp each component master with a string "componentKey" BEFORE
+    // `remove_guid_fields` wipes the guid. Instances reference their
+    // master via `symbolData.symbolID` (preserved by symbol_id_removal's
+    // `inside_symbol_data` guard), and this string is the lookup key.
+    stamp_component_keys(&mut document);
 
     // 7. Extract and process blobs (convert to base64)
     let blobs = json
@@ -266,16 +275,24 @@ pub fn convert(bytes: &[u8], base_dir: Option<&std::path::Path>) -> Result<serde
     // 36. Remove default uniformScaleFactor values (1.0 is the default)
     schema::remove_default_uniform_scale_factor(&mut document)?;
 
-    // Build final JSON output
+    // `document` is actually { document, components? } — unpack so the
+    // final JSON has `document` and (optionally) `components` as siblings.
+    let (doc_tree, components) = split_doc_and_components(document);
+
     let mut output = serde_json::json!({
         "version": parsed.version,
         "fileType": match file_type {
             FileType::Figma => "figma",
             FileType::FigJam => "figjam",
         },
-        "document": document,
+        "document": doc_tree,
         "blobs": processed_blobs,
     });
+    if let Some(c) = components {
+        if let Some(obj) = output.as_object_mut() {
+            obj.insert("components".to_string(), c);
+        }
+    }
 
     // 37. Remove document properties (document-level properties)
     schema::remove_document_properties(&mut output)?;
@@ -446,4 +463,45 @@ pub fn convert_raw(bytes: &[u8]) -> Result<serde_json::Value> {
     });
 
     Ok(output)
+}
+
+/// Stamp each component master in `tree.components[*]` with a `componentKey`
+/// string `"sessionID:localID"` derived from its `guid`. Instances reference
+/// their master via `symbolData.symbolID` (a plain `{localID, sessionID}`
+/// pair that symbol_id_removal preserves), and the string form is what
+/// renderers look the master up by — after `remove_guid_fields` strips the
+/// raw guid on every node including the master roots.
+fn stamp_component_keys(tree: &mut serde_json::Value) {
+    let Some(components) = tree
+        .get_mut("components")
+        .and_then(|v| v.as_array_mut())
+    else {
+        return;
+    };
+    for component in components {
+        let Some(obj) = component.as_object_mut() else { continue };
+        let Some(guid_val) = obj.get("guid") else { continue };
+        let Some(guid) = guid_val.as_object() else { continue };
+        let session = guid
+            .get("sessionID")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        let local = guid.get("localID").and_then(|v| v.as_u64()).unwrap_or(0);
+        obj.insert(
+            "componentKey".to_string(),
+            serde_json::Value::String(format!("{}:{}", session, local)),
+        );
+    }
+}
+
+/// Split `build_tree_with_components`' result back into `(document, components)`.
+fn split_doc_and_components(mut tree: serde_json::Value) -> (serde_json::Value, Option<serde_json::Value>) {
+    let Some(obj) = tree.as_object_mut() else {
+        return (tree, None);
+    };
+    let doc = obj
+        .remove("document")
+        .unwrap_or(serde_json::Value::Null);
+    let components = obj.remove("components");
+    (doc, components)
 }

@@ -24,4 +24,4 @@ pub use transformations::{
     remove_default_uniform_scale_factor, remove_user_facing_versions, remove_visible_only_objects, simplify_enums, simplify_text_properties,
     transform_colors_to_css, transform_image_hashes, transform_matrix_to_css,
 };
-pub use tree::build_tree;
+pub use tree::{build_tree, build_tree_with_components};

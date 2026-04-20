@@ -1,6 +1,6 @@
 use crate::error::{FigError, Result};
 use serde_json::Value as JsonValue;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// Build a tree structure from flat nodeChanges array
 ///
@@ -23,17 +23,91 @@ use std::collections::HashMap;
 /// let root = build_tree(node_changes).unwrap();
 /// ```
 pub fn build_tree(node_changes: Vec<JsonValue>) -> Result<JsonValue> {
-    // 1. Create map: GUID -> Node and map of parent -> children (position, GUID) tuples
+    let (nodes, parent_to_children) = index_node_changes(&node_changes)?;
+    build_node_tree("0:0", &nodes, &parent_to_children)
+}
+
+/// Build the document tree (rooted at "0:0") plus the subtrees of all
+/// COMPONENT master definitions (nodes with type = SYMBOL) that live outside
+/// the document's visible tree. Returns `{ document, components }`.
+///
+/// Component masters are typically parented under hidden page-like containers
+/// that the document doesn't walk into, which is why
+/// `build_tree` alone drops them. Renderers that want to materialise an
+/// INSTANCE need the master's children, so emit them as a separate list
+/// keyed by guid.
+pub fn build_tree_with_components(node_changes: Vec<JsonValue>) -> Result<JsonValue> {
+    let (nodes, parent_to_children) = index_node_changes(&node_changes)?;
+    let document = build_node_tree("0:0", &nodes, &parent_to_children)?;
+
+    // Collect every SYMBOL node's guid. Figma parks component masters on a
+    // hidden "Internal Only Canvas" that `remove_internal_only_nodes` later
+    // strips from the document tree — so we pick them up NOW, before that
+    // filter runs, regardless of whether they're reachable from "0:0".
+    let symbol_guids: HashSet<String> = nodes
+        .iter()
+        .filter_map(|(g, n)| if node_is_symbol(n) { Some(g.clone()) } else { None })
+        .collect();
+
+    // Emit only the top-most SYMBOL of each tree (a SYMBOL nested inside
+    // another SYMBOL is already reachable via the outer master's children).
+    let mut components: Vec<JsonValue> = Vec::new();
+    for guid in &symbol_guids {
+        if has_symbol_ancestor(guid, &nodes, &symbol_guids) {
+            continue;
+        }
+        let subtree = build_node_tree(guid, &nodes, &parent_to_children)?;
+        components.push(subtree);
+    }
+
+    let mut out = serde_json::Map::new();
+    out.insert("document".to_string(), document);
+    if !components.is_empty() {
+        out.insert("components".to_string(), JsonValue::Array(components));
+    }
+    Ok(JsonValue::Object(out))
+}
+
+fn has_symbol_ancestor(
+    guid: &str,
+    nodes: &HashMap<String, JsonValue>,
+    symbol_guids: &HashSet<String>,
+) -> bool {
+    let mut cur = match nodes.get(guid).and_then(|n| n.get("parentIndex")) {
+        Some(p) => match format_parent_guid(p) {
+            Ok(g) => g,
+            Err(_) => return false,
+        },
+        None => return false,
+    };
+    let mut visited: HashSet<String> = HashSet::new();
+    while visited.insert(cur.clone()) {
+        if symbol_guids.contains(&cur) {
+            return true;
+        }
+        let parent = match nodes.get(&cur).and_then(|n| n.get("parentIndex")) {
+            Some(p) => match format_parent_guid(p) {
+                Ok(g) => g,
+                Err(_) => return false,
+            },
+            None => return false,
+        };
+        cur = parent;
+    }
+    false
+}
+
+fn index_node_changes(
+    node_changes: &[JsonValue],
+) -> Result<(HashMap<String, JsonValue>, HashMap<String, Vec<(String, String)>>)> {
     let mut nodes: HashMap<String, JsonValue> = HashMap::new();
     let mut parent_to_children: HashMap<String, Vec<(String, String)>> = HashMap::new();
 
-    for node in &node_changes {
+    for node in node_changes {
         let guid = format_guid(node)?;
         nodes.insert(guid, node.clone());
     }
-
-    // 2. Build parent-child relationships (store position and GUID separately)
-    for node in &node_changes {
+    for node in node_changes {
         if let Some(parent_index) = node.get("parentIndex") {
             let parent_guid = format_parent_guid(parent_index)?;
             let child_guid = format_guid(node)?;
@@ -42,21 +116,33 @@ pub fn build_tree(node_changes: Vec<JsonValue>) -> Result<JsonValue> {
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
-
             parent_to_children
                 .entry(parent_guid)
                 .or_default()
                 .push((position, child_guid));
         }
     }
-
-    // 3. Sort children by position
     for children in parent_to_children.values_mut() {
         children.sort_by(|a, b| a.0.cmp(&b.0));
     }
+    Ok((nodes, parent_to_children))
+}
 
-    // 4. Build tree recursively from root
-    build_node_tree("0:0", &nodes, &parent_to_children)
+
+fn node_is_symbol(node: &JsonValue) -> bool {
+    // After enum simplification the type field is a plain string, but the
+    // pre-transform data has {__enum__: "NodeType", value: "SYMBOL"}. Accept
+    // either form so this can run before or after schema simplification.
+    let t = node.get("type");
+    if let Some(JsonValue::String(s)) = t {
+        return s == "SYMBOL";
+    }
+    if let Some(JsonValue::Object(m)) = t {
+        if let Some(JsonValue::String(v)) = m.get("value") {
+            return v == "SYMBOL";
+        }
+    }
+    false
 }
 
 /// Recursively build a node with its children
@@ -204,6 +290,46 @@ mod tests {
 
         // Check parentIndex is removed
         assert!(children[0].get("parentIndex").is_none());
+    }
+
+    #[test]
+    fn test_build_tree_with_components_emits_orphan_symbols() {
+        let node_changes = vec![
+            json!({
+                "guid": {"sessionID": 0, "localID": 0},
+                "name": "Doc"
+            }),
+            // Orphan SYMBOL master (no parentIndex)
+            json!({
+                "guid": {"sessionID": 1, "localID": 1},
+                "name": "Master",
+                "type": { "__enum__": "NodeType", "value": "SYMBOL" }
+            }),
+            // Child of the master
+            json!({
+                "guid": {"sessionID": 1, "localID": 2},
+                "name": "MasterChild",
+                "parentIndex": {
+                    "guid": {"sessionID": 1, "localID": 1},
+                    "position": "a"
+                }
+            }),
+        ];
+        let out = build_tree_with_components(node_changes).unwrap();
+        let document = out.get("document").unwrap();
+        assert_eq!(document.get("name").and_then(|v| v.as_str()), Some("Doc"));
+
+        let components = out
+            .get("components")
+            .expect("components should be present")
+            .as_array()
+            .unwrap();
+        assert_eq!(components.len(), 1, "expected one master");
+        let master = &components[0];
+        assert_eq!(master.get("name").and_then(|v| v.as_str()), Some("Master"));
+        let kids = master.get("children").and_then(|v| v.as_array()).unwrap();
+        assert_eq!(kids.len(), 1);
+        assert_eq!(kids[0].get("name").and_then(|v| v.as_str()), Some("MasterChild"));
     }
 
     #[test]
