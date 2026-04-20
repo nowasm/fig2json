@@ -6,10 +6,9 @@ use serde_json::Value as JsonValue;
 /// Recursively traverses the JSON tree and removes stroke-related fields:
 /// - "strokeAlign" - Stroke alignment (INSIDE/CENTER/OUTSIDE) not supported in CSS
 /// - "strokeJoin" - Stroke join style (MITER/BEVEL/ROUND)
-/// - "strokeWeight" - Stroke width value
 ///
-/// These fields contain stroke properties that don't have direct CSS equivalents
-/// or are not essential for basic HTML/CSS rendering.
+/// "strokeWeight" is preserved: downstream tools (fig2psd) need it to rasterise
+/// outlines at the correct thickness.
 ///
 /// # Arguments
 /// * `tree` - The JSON tree to modify (usually the document root)
@@ -49,7 +48,6 @@ fn transform_recursive(value: &mut JsonValue) -> Result<()> {
             // Remove stroke property fields if they exist
             map.remove("strokeAlign");
             map.remove("strokeJoin");
-            map.remove("strokeWeight");
 
             // Recurse into all remaining values
             let keys: Vec<String> = map.keys().cloned().collect();
@@ -115,7 +113,7 @@ mod tests {
     }
 
     #[test]
-    fn test_remove_stroke_weight() {
+    fn test_preserve_stroke_weight() {
         let mut tree = json!({
             "name": "Shape",
             "strokeWeight": 1.0,
@@ -124,7 +122,8 @@ mod tests {
 
         remove_stroke_properties(&mut tree).unwrap();
 
-        assert!(tree.get("strokeWeight").is_none());
+        // strokeWeight is kept for downstream rasterisers.
+        assert_eq!(tree.get("strokeWeight").and_then(|v| v.as_f64()), Some(1.0));
         assert_eq!(tree.get("name").unwrap().as_str(), Some("Shape"));
         assert_eq!(tree.get("visible").unwrap().as_bool(), Some(true));
     }
@@ -149,7 +148,7 @@ mod tests {
 
         assert!(tree.get("strokeAlign").is_none());
         assert!(tree.get("strokeJoin").is_none());
-        assert!(tree.get("strokeWeight").is_none());
+        assert_eq!(tree.get("strokeWeight").and_then(|v| v.as_f64()), Some(2.5));
         assert_eq!(tree.get("name").unwrap().as_str(), Some("Rectangle"));
         assert_eq!(tree.get("opacity").unwrap().as_f64(), Some(1.0));
     }
@@ -186,7 +185,10 @@ mod tests {
 
         // Check first nested element
         assert!(tree["children"][0].get("strokeAlign").is_none());
-        assert!(tree["children"][0].get("strokeWeight").is_none());
+        assert_eq!(
+            tree["children"][0].get("strokeWeight").and_then(|v| v.as_f64()),
+            Some(1.0)
+        );
         assert_eq!(
             tree["children"][0].get("name").unwrap().as_str(),
             Some("Child1")
@@ -240,9 +242,9 @@ mod tests {
 
         remove_stroke_properties(&mut tree).unwrap();
 
-        // Stroke properties removed
+        // Stroke align removed, weight kept.
         assert!(tree.get("strokeAlign").is_none());
-        assert!(tree.get("strokeWeight").is_none());
+        assert_eq!(tree.get("strokeWeight").and_then(|v| v.as_f64()), Some(1.0));
 
         // strokePaints preserved (contains actual stroke color data)
         assert!(tree.get("strokePaints").is_some());
@@ -289,7 +291,10 @@ mod tests {
             Some("Item2")
         );
 
-        assert!(tree["items"][2].get("strokeWeight").is_none());
+        assert_eq!(
+            tree["items"][2].get("strokeWeight").and_then(|v| v.as_f64()),
+            Some(3.0)
+        );
         assert_eq!(
             tree["items"][2].get("name").unwrap().as_str(),
             Some("Item3")

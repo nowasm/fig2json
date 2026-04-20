@@ -17,8 +17,10 @@ use serde_json::Value as JsonValue;
 /// - "emojiImageSet" - Emoji image set enum
 /// - "autoRename" - Auto rename flag
 /// - "textTracking" - Text tracking value
-/// - "textAlignVertical" - Vertical text alignment (Figma auto-layout)
-/// - "textAutoResize" - Text auto-resize behavior (Figma auto-layout)
+///
+/// `textAlignVertical` and `textAutoResize` are preserved: downstream
+/// rasterisers (fig2psd) need them to know whether to wrap/stretch the
+/// string and how to position it inside the text box.
 ///
 /// These fields contain text rendering configuration that is not needed for
 /// basic HTML/CSS text rendering.
@@ -66,8 +68,6 @@ fn transform_recursive(value: &mut JsonValue) -> Result<()> {
             map.remove("emojiImageSet");
             map.remove("autoRename");
             map.remove("textTracking");
-            map.remove("textAlignVertical");
-            map.remove("textAutoResize");
 
             // Recurse into all remaining values
             let keys: Vec<String> = map.keys().cloned().collect();
@@ -333,7 +333,7 @@ mod tests {
     }
 
     #[test]
-    fn test_remove_text_align_vertical() {
+    fn test_preserve_text_align_vertical() {
         let mut tree = json!({
             "name": "Text",
             "textAlignVertical": "TOP",
@@ -342,13 +342,16 @@ mod tests {
 
         remove_text_metadata_fields(&mut tree).unwrap();
 
-        assert!(tree.get("textAlignVertical").is_none());
+        assert_eq!(
+            tree.get("textAlignVertical").and_then(|v| v.as_str()),
+            Some("TOP")
+        );
         assert_eq!(tree.get("name").unwrap().as_str(), Some("Text"));
         assert_eq!(tree.get("fontSize").unwrap().as_f64(), Some(16.0));
     }
 
     #[test]
-    fn test_remove_text_auto_resize() {
+    fn test_preserve_text_auto_resize() {
         let mut tree = json!({
             "name": "Text",
             "textAutoResize": "WIDTH_AND_HEIGHT",
@@ -357,7 +360,10 @@ mod tests {
 
         remove_text_metadata_fields(&mut tree).unwrap();
 
-        assert!(tree.get("textAutoResize").is_none());
+        assert_eq!(
+            tree.get("textAutoResize").and_then(|v| v.as_str()),
+            Some("WIDTH_AND_HEIGHT")
+        );
         assert_eq!(tree.get("name").unwrap().as_str(), Some("Text"));
         assert_eq!(tree.get("fontSize").unwrap().as_f64(), Some(14.0));
     }
