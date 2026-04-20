@@ -35,27 +35,36 @@ use serde_json::Value as JsonValue;
 /// assert!(tree.get("size").is_some());
 /// ```
 pub fn remove_type(tree: &mut JsonValue) -> Result<()> {
-    transform_recursive(tree)
+    transform_inner(tree, false)
 }
 
-fn transform_recursive(value: &mut JsonValue) -> Result<()> {
+/// `inside_paints` is true when this value lives inside a `fillPaints` or
+/// `strokePaints` array. The `type` field on a Paint identifies its kind
+/// (SOLID / GRADIENT_LINEAR / GRADIENT_RADIAL / GRADIENT_ANGULAR /
+/// GRADIENT_DIAMOND / IMAGE). Node-level `type` heuristics can be redone
+/// from other fields downstream, but paint kinds aren't inferrable from
+/// the same data (e.g. linear vs radial gradients share the `stops` shape),
+/// so we keep them.
+fn transform_inner(value: &mut JsonValue, inside_paints: bool) -> Result<()> {
     match value {
         JsonValue::Object(map) => {
-            // Remove the type field
-            map.remove("type");
+            if !inside_paints {
+                map.remove("type");
+            }
 
-            // Recurse into all remaining values
             let keys: Vec<String> = map.keys().cloned().collect();
             for key in keys {
+                let child_inside = inside_paints
+                    || key == "fillPaints"
+                    || key == "strokePaints";
                 if let Some(val) = map.get_mut(&key) {
-                    transform_recursive(val)?;
+                    transform_inner(val, child_inside)?;
                 }
             }
         }
         JsonValue::Array(arr) => {
-            // Recurse into array elements
             for val in arr.iter_mut() {
-                transform_recursive(val)?;
+                transform_inner(val, inside_paints)?;
             }
         }
         _ => {
@@ -226,9 +235,10 @@ mod tests {
         assert!(tree.get("transform").is_some());
         assert!(tree.get("fillPaints").is_some());
 
-        // Note: type is removed recursively, including from nested paint objects
+        // Paint types are preserved — without them, renderers can't tell a
+        // linear gradient from a radial one (both share the `stops` field).
         let paints = tree.get("fillPaints").unwrap().as_array().unwrap();
-        assert!(paints[0].get("type").is_none());
+        assert_eq!(paints[0].get("type").and_then(|v| v.as_str()), Some("SOLID"));
         assert_eq!(paints[0].get("color").unwrap().as_str(), Some("#ffffff"));
     }
 
@@ -273,5 +283,34 @@ mod tests {
         for child in children {
             assert!(child.get("type").is_none());
         }
+    }
+
+    #[test]
+    fn test_preserves_type_inside_fill_paints() {
+        // Paint.type distinguishes SOLID / GRADIENT_LINEAR / GRADIENT_RADIAL
+        // etc. — all gradient paints share the `stops` field, so renderers
+        // can't tell them apart without the type enum. Must survive.
+        let mut tree = json!({
+            "name": "Rectangle",
+            "type": "RECTANGLE",
+            "fillPaints": [
+                { "type": "GRADIENT_RADIAL", "stops": [], "opacity": 1.0 },
+                { "type": "SOLID", "color": "#ff0000" }
+            ],
+            "strokePaints": [
+                { "type": "IMAGE", "image": { "filename": "foo.png" } }
+            ]
+        });
+
+        remove_type(&mut tree).unwrap();
+
+        // Node-level type is still removed.
+        assert!(tree.get("type").is_none());
+        // Paint types are preserved.
+        let fills = tree["fillPaints"].as_array().unwrap();
+        assert_eq!(fills[0]["type"].as_str(), Some("GRADIENT_RADIAL"));
+        assert_eq!(fills[1]["type"].as_str(), Some("SOLID"));
+        let strokes = tree["strokePaints"].as_array().unwrap();
+        assert_eq!(strokes[0]["type"].as_str(), Some("IMAGE"));
     }
 }
