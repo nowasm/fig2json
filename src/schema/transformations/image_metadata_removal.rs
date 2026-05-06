@@ -7,13 +7,17 @@ use serde_json::Value as JsonValue;
 /// - "thumbHash" - Thumbnail hash array
 /// - "animationFrame" - Animation frame number
 /// - "imageShouldColorManage" - Color management flag
-/// - "imageScaleMode" - Image scaling mode
 /// - "originalImageWidth" - Original image width
 /// - "originalImageHeight" - Original image height
 /// - "altText" - Alternative text for image
 /// - "imageThumbnail" - Thumbnail image (duplicate of image field)
 /// - "rotation" - Image rotation (when inside paint objects)
 /// - "scale" - Image scale (when inside paint objects)
+///
+/// `imageScaleMode` is RENAMED to `scaleMode` (matching Figma's REST API
+/// name) instead of removed — downstream renderers (e.g. fig2psd) need it to
+/// pick FILL vs FIT vs CROP vs STRETCH and to know not to anisotropically
+/// stretch portrait photos into landscape frames.
 ///
 /// These fields contain image metadata that is not essential for basic
 /// HTML/CSS rendering.
@@ -55,11 +59,18 @@ fn transform_recursive(value: &mut JsonValue) -> Result<()> {
             map.remove("thumbHash");
             map.remove("animationFrame");
             map.remove("imageShouldColorManage");
-            map.remove("imageScaleMode");
             map.remove("originalImageWidth");
             map.remove("originalImageHeight");
             map.remove("altText");
             map.remove("imageThumbnail");
+
+            // Rename imageScaleMode → scaleMode (Figma REST API name).
+            // Downstream renderers need this to choose FILL / FIT / CROP /
+            // STRETCH; without it they fall back to anisotropic stretching,
+            // which squashes images whose aspect doesn't match the frame.
+            if let Some(scale_mode) = map.remove("imageScaleMode") {
+                map.insert("scaleMode".to_string(), scale_mode);
+            }
 
             // Check if this is a paint object with image properties
             // (rotation and scale should only be removed in certain contexts)
@@ -150,7 +161,12 @@ mod tests {
     }
 
     #[test]
-    fn test_remove_image_scale_mode() {
+    fn test_rename_image_scale_mode() {
+        // imageScaleMode should be renamed to scaleMode (Figma REST API name)
+        // — downstream renderers need this to pick FILL / FIT / CROP / STRETCH.
+        // The enum object form is what arrives if this transformation runs
+        // before enum_simplification; the simple-string form is what arrives
+        // after.
         let mut tree = json!({
             "name": "Image",
             "imageScaleMode": {
@@ -163,8 +179,24 @@ mod tests {
         remove_image_metadata_fields(&mut tree).unwrap();
 
         assert!(tree.get("imageScaleMode").is_none());
+        assert!(tree.get("scaleMode").is_some());
         assert_eq!(tree.get("name").unwrap().as_str(), Some("Image"));
         assert_eq!(tree.get("opacity").unwrap().as_f64(), Some(1.0));
+    }
+
+    #[test]
+    fn test_rename_image_scale_mode_simplified() {
+        // After enum_simplification has run, imageScaleMode is just a string.
+        let mut tree = json!({
+            "name": "Image",
+            "imageScaleMode": "FILL",
+            "opacity": 1.0
+        });
+
+        remove_image_metadata_fields(&mut tree).unwrap();
+
+        assert!(tree.get("imageScaleMode").is_none());
+        assert_eq!(tree.get("scaleMode").unwrap().as_str(), Some("FILL"));
     }
 
     #[test]
@@ -270,6 +302,9 @@ mod tests {
         assert!(tree.get("altText").is_none());
         assert!(tree.get("rotation").is_none());
         assert!(tree.get("scale").is_none());
+
+        // imageScaleMode is renamed (not removed) to scaleMode.
+        assert!(tree.get("scaleMode").is_some());
 
         // Other fields preserved
         assert_eq!(tree.get("name").unwrap().as_str(), Some("ComplexImage"));
