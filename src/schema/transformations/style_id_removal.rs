@@ -1,54 +1,68 @@
 use crate::error::Result;
 use serde_json::Value as JsonValue;
 
-/// Remove style ID reference fields from all objects in the JSON tree
+/// Normalize Figma shared-style references to compact `"<sessionID>:<localID>"`
+/// strings keyed against the top-level `styles` map produced by
+/// `extract_styles`.
 ///
-/// Recursively traverses the JSON tree and removes Figma shared style references:
-/// - "styleIdForFill" - Reference to fill paint style
-/// - "styleIdForText" - Reference to text style
-/// - "styleIdForStrokeFill" - Reference to stroke paint style
+/// Three reference shapes appear in the raw output:
+/// - `styleIdForFill` - reference to fill paint style
+/// - `styleIdForText` - reference to text style
+/// - `styleIdForStrokeFill` - reference to stroke paint style
 ///
-/// These fields reference Figma's shared style library. The actual style values
-/// are already inlined in the node properties, so these references are not needed
-/// for HTML/CSS rendering.
+/// Each is normally an object `{ guid: { localID, sessionID } }` (or
+/// `{ assetRef: ... }` for cross-file library refs). For the local-guid
+/// shape, we replace it with the string key so renderers can look the
+/// resolved style up directly. The cross-file `assetRef` form is kept as
+/// is — the actual style data isn't in this file, so there's nothing for
+/// downstream code to resolve to anyway.
+///
+/// Important: do NOT touch the `symbolOverrides` array inside `symbolData`.
+/// Each override entry there is keyed by a `guid` field that identifies
+/// which descendant of the master gets overridden — it has nothing to do
+/// with shared-style references.
 ///
 /// # Arguments
 /// * `tree` - The JSON tree to modify (usually the document root)
 ///
 /// # Returns
-/// * `Ok(())` - Successfully removed all style ID fields
-///
-/// # Examples
-/// ```no_run
-/// use fig2json::schema::remove_style_ids;
-/// use serde_json::json;
-///
-/// let mut tree = json!({
-///     "name": "Text",
-///     "fillPaints": [{"color": "#ffffff", "type": "SOLID"}],
-///     "styleIdForFill": {
-///         "assetRef": {
-///             "key": "abc123",
-///             "version": "1:101"
-///         }
-///     },
-///     "fontSize": 14.0
-/// });
-/// remove_style_ids(&mut tree).unwrap();
-/// // tree now has "name", "fillPaints", and "fontSize" fields
-/// ```
+/// * `Ok(())` - Successfully normalized all style ID fields
 pub fn remove_style_ids(tree: &mut JsonValue) -> Result<()> {
     transform_recursive(tree)
 }
 
-/// Recursively remove style ID fields from a JSON value
+const STYLE_REF_KEYS: &[&str] = &["styleIdForFill", "styleIdForText", "styleIdForStrokeFill"];
+
+/// Format a guid pair as `"<sessionID>:<localID>"`, matching `extract_styles`.
+fn guid_key(guid: &JsonValue) -> Option<String> {
+    let obj = guid.as_object()?;
+    let local = obj.get("localID")?.as_u64()?;
+    let session = obj.get("sessionID")?.as_u64()?;
+    Some(format!("{}:{}", session, local))
+}
+
+/// Convert one style-id reference object in place. Returns true when the
+/// reference was rewritten to a string; false when we left it alone.
+fn rewrite_style_ref(value: &mut JsonValue) -> bool {
+    let Some(obj) = value.as_object() else { return false; };
+    if let Some(guid) = obj.get("guid") {
+        if let Some(key) = guid_key(guid) {
+            *value = JsonValue::String(key);
+            return true;
+        }
+    }
+    false
+}
+
+/// Recursively normalize style ID fields in a JSON value
 fn transform_recursive(value: &mut JsonValue) -> Result<()> {
     match value {
         JsonValue::Object(map) => {
-            // Remove all style ID fields if they exist
-            map.remove("styleIdForFill");
-            map.remove("styleIdForText");
-            map.remove("styleIdForStrokeFill");
+            for key in STYLE_REF_KEYS {
+                if let Some(v) = map.get_mut(*key) {
+                    rewrite_style_ref(v);
+                }
+            }
 
             // Recurse into all remaining values
             let keys: Vec<String> = map.keys().cloned().collect();
@@ -78,130 +92,71 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn test_remove_style_id_for_fill() {
+    fn rewrites_local_guid_fill_ref_to_string() {
         let mut tree = json!({
             "name": "Rectangle",
             "fillPaints": [{"color": "#ff0000", "type": "SOLID"}],
             "styleIdForFill": {
-                "assetRef": {
-                    "key": "abc123",
-                    "version": "1:77"
-                }
+                "guid": { "localID": 28, "sessionID": 39 }
             },
             "visible": true
         });
 
         remove_style_ids(&mut tree).unwrap();
 
-        assert!(tree.get("styleIdForFill").is_none());
+        assert_eq!(
+            tree.get("styleIdForFill").unwrap().as_str(),
+            Some("39:28")
+        );
         assert_eq!(tree.get("name").unwrap().as_str(), Some("Rectangle"));
         assert!(tree.get("fillPaints").is_some());
-        assert_eq!(tree.get("visible").unwrap().as_bool(), Some(true));
     }
 
     #[test]
-    fn test_remove_style_id_for_text() {
+    fn rewrites_text_and_stroke_refs() {
         let mut tree = json!({
-            "name": "TextNode",
-            "fontSize": 14.0,
-            "styleIdForText": {
-                "assetRef": {
-                    "key": "def456",
-                    "version": "1:161"
-                }
-            },
+            "styleIdForText": { "guid": { "localID": 1, "sessionID": 2 } },
+            "styleIdForStrokeFill": { "guid": { "localID": 3, "sessionID": 4 } }
+        });
+
+        remove_style_ids(&mut tree).unwrap();
+
+        assert_eq!(tree.get("styleIdForText").unwrap().as_str(), Some("2:1"));
+        assert_eq!(
+            tree.get("styleIdForStrokeFill").unwrap().as_str(),
+            Some("4:3")
+        );
+    }
+
+    #[test]
+    fn leaves_cross_file_assetref_alone() {
+        // Cross-file library refs use `assetRef` instead of `guid`. The
+        // referenced style data isn't in this file at all, so we leave the
+        // record as-is rather than fabricate a key that resolves to nothing.
+        let mut tree = json!({
             "styleIdForFill": {
-                "assetRef": {
-                    "key": "ghi789",
-                    "version": "1:101"
-                }
+                "assetRef": { "key": "abc123", "version": "1:77" }
             }
         });
 
         remove_style_ids(&mut tree).unwrap();
 
-        assert!(tree.get("styleIdForText").is_none());
-        assert!(tree.get("styleIdForFill").is_none());
-        assert_eq!(tree.get("name").unwrap().as_str(), Some("TextNode"));
-        assert_eq!(tree.get("fontSize").unwrap().as_f64(), Some(14.0));
+        let v = tree.get("styleIdForFill").unwrap();
+        assert!(v.is_object());
+        assert!(v.get("assetRef").is_some());
     }
 
     #[test]
-    fn test_remove_style_id_for_stroke_fill() {
+    fn rewrites_in_symbol_overrides() {
         let mut tree = json!({
-            "name": "Shape",
-            "strokePaints": [{"color": "#000000", "type": "SOLID"}],
-            "styleIdForStrokeFill": {
-                "assetRef": {
-                    "key": "xyz000",
-                    "version": "1:83"
-                }
-            }
-        });
-
-        remove_style_ids(&mut tree).unwrap();
-
-        assert!(tree.get("styleIdForStrokeFill").is_none());
-        assert_eq!(tree.get("name").unwrap().as_str(), Some("Shape"));
-        assert!(tree.get("strokePaints").is_some());
-    }
-
-    #[test]
-    fn test_remove_all_style_ids() {
-        let mut tree = json!({
-            "name": "StyledNode",
-            "styleIdForFill": {"assetRef": {"key": "a", "version": "1:1"}},
-            "styleIdForText": {"assetRef": {"key": "b", "version": "1:2"}},
-            "styleIdForStrokeFill": {"assetRef": {"key": "c", "version": "1:3"}},
-            "visible": true
-        });
-
-        remove_style_ids(&mut tree).unwrap();
-
-        assert!(tree.get("styleIdForFill").is_none());
-        assert!(tree.get("styleIdForText").is_none());
-        assert!(tree.get("styleIdForStrokeFill").is_none());
-        assert_eq!(tree.get("name").unwrap().as_str(), Some("StyledNode"));
-        assert_eq!(tree.get("visible").unwrap().as_bool(), Some(true));
-    }
-
-    #[test]
-    fn test_remove_style_ids_nested() {
-        let mut tree = json!({
-            "children": [
-                {
-                    "name": "Child1",
-                    "styleIdForFill": {"assetRef": {"key": "x", "version": "1:1"}}
-                },
-                {
-                    "name": "Child2",
-                    "styleIdForText": {"assetRef": {"key": "y", "version": "1:2"}}
-                }
-            ]
-        });
-
-        remove_style_ids(&mut tree).unwrap();
-
-        assert!(tree["children"][0].get("styleIdForFill").is_none());
-        assert!(tree["children"][1].get("styleIdForText").is_none());
-        assert_eq!(tree["children"][0]["name"].as_str(), Some("Child1"));
-        assert_eq!(tree["children"][1]["name"].as_str(), Some("Child2"));
-    }
-
-    #[test]
-    fn test_remove_style_ids_deeply_nested() {
-        let mut tree = json!({
-            "document": {
-                "styleIdForFill": {"assetRef": {"key": "a", "version": "1:1"}},
-                "children": [
+            "symbolData": {
+                "symbolOverrides": [
                     {
-                        "styleIdForText": {"assetRef": {"key": "b", "version": "1:2"}},
-                        "children": [
-                            {
-                                "styleIdForStrokeFill": {"assetRef": {"key": "c", "version": "1:3"}},
-                                "name": "DeepChild"
-                            }
-                        ]
+                        "styleIdForFill": { "guid": { "localID": 28, "sessionID": 39 } }
+                    },
+                    {
+                        "styleIdForText": { "guid": { "localID": 5, "sessionID": 6 } },
+                        "fontSize": 12.0
                     }
                 ]
             }
@@ -209,15 +164,22 @@ mod tests {
 
         remove_style_ids(&mut tree).unwrap();
 
-        assert!(tree["document"].get("styleIdForFill").is_none());
-        assert!(tree["document"]["children"][0].get("styleIdForText").is_none());
-        assert!(tree["document"]["children"][0]["children"][0]
-            .get("styleIdForStrokeFill")
-            .is_none());
+        assert_eq!(
+            tree["symbolData"]["symbolOverrides"][0]["styleIdForFill"].as_str(),
+            Some("39:28")
+        );
+        assert_eq!(
+            tree["symbolData"]["symbolOverrides"][1]["styleIdForText"].as_str(),
+            Some("6:5")
+        );
+        assert_eq!(
+            tree["symbolData"]["symbolOverrides"][1]["fontSize"].as_f64(),
+            Some(12.0)
+        );
     }
 
     #[test]
-    fn test_remove_style_ids_missing() {
+    fn nodes_without_style_refs_unchanged() {
         let mut tree = json!({
             "name": "Frame",
             "type": "FRAME",
@@ -227,80 +189,6 @@ mod tests {
         remove_style_ids(&mut tree).unwrap();
 
         assert!(tree.get("styleIdForFill").is_none());
-        assert!(tree.get("styleIdForText").is_none());
-        assert!(tree.get("styleIdForStrokeFill").is_none());
         assert_eq!(tree.get("name").unwrap().as_str(), Some("Frame"));
-    }
-
-    #[test]
-    fn test_remove_style_ids_preserves_actual_styles() {
-        let mut tree = json!({
-            "name": "Text",
-            "fillPaints": [{"color": "#ffffff", "type": "SOLID"}],
-            "fontSize": 14.0,
-            "fontName": {"family": "Inter", "style": "Medium"},
-            "styleIdForFill": {"assetRef": {"key": "a", "version": "1:1"}},
-            "styleIdForText": {"assetRef": {"key": "b", "version": "1:2"}}
-        });
-
-        remove_style_ids(&mut tree).unwrap();
-
-        // Style IDs removed
-        assert!(tree.get("styleIdForFill").is_none());
-        assert!(tree.get("styleIdForText").is_none());
-
-        // Actual style values preserved
-        assert_eq!(tree.get("fontSize").unwrap().as_f64(), Some(14.0));
-        assert!(tree.get("fillPaints").is_some());
-        assert!(tree.get("fontName").is_some());
-    }
-
-    #[test]
-    fn test_remove_style_ids_empty_style_id() {
-        let mut tree = json!({
-            "name": "Node",
-            "styleIdForFill": {},
-            "visible": true
-        });
-
-        remove_style_ids(&mut tree).unwrap();
-
-        assert!(tree.get("styleIdForFill").is_none());
-        assert_eq!(tree.get("name").unwrap().as_str(), Some("Node"));
-        assert_eq!(tree.get("visible").unwrap().as_bool(), Some(true));
-    }
-
-    #[test]
-    fn test_remove_style_ids_in_symbol_overrides() {
-        let mut tree = json!({
-            "symbolData": {
-                "symbolOverrides": [
-                    {
-                        "styleIdForFill": {"assetRef": {"key": "a", "version": "1:1"}},
-                        "fillPaints": [{"color": "#ff0000", "type": "SOLID"}]
-                    },
-                    {
-                        "styleIdForText": {"assetRef": {"key": "b", "version": "1:2"}},
-                        "fontSize": 12.0
-                    }
-                ]
-            }
-        });
-
-        remove_style_ids(&mut tree).unwrap();
-
-        assert!(tree["symbolData"]["symbolOverrides"][0]
-            .get("styleIdForFill")
-            .is_none());
-        assert!(tree["symbolData"]["symbolOverrides"][1]
-            .get("styleIdForText")
-            .is_none());
-        assert!(tree["symbolData"]["symbolOverrides"][0]
-            .get("fillPaints")
-            .is_some());
-        assert_eq!(
-            tree["symbolData"]["symbolOverrides"][1]["fontSize"].as_f64(),
-            Some(12.0)
-        );
     }
 }

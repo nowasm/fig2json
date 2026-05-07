@@ -42,21 +42,27 @@ fn transform_recursive(value: &mut JsonValue) -> Result<()> {
     transform_inner(value, false)
 }
 
-/// `inside_derived` is true when this value lives under an ancestor's
-/// `derivedSymbolData` array. Entries there are flattened baked-out children
-/// of a component instance and their only surviving ancestry record is
-/// `guidPath.guids`, so downstream renderers need it to reconstruct the
-/// instance tree and compose transforms. Preserve `guidPath` in that subtree.
-fn transform_inner(value: &mut JsonValue, inside_derived: bool) -> Result<()> {
+/// `inside_keep` is true when this value lives under an ancestor that
+/// requires `guidPath` to survive:
+///
+/// - `derivedSymbolData[*]`: flattened baked-out children of a component
+///   instance. Their only surviving ancestry record is `guidPath.guids`,
+///   so downstream renderers need it to reconstruct the instance tree.
+/// - `symbolOverrides[*]`: each override entry identifies which descendant
+///   of the master it targets via `guidPath.guids` — a renderer applying
+///   overrides to the cloned master tree must follow that path to find
+///   the right node.
+fn transform_inner(value: &mut JsonValue, inside_keep: bool) -> Result<()> {
     match value {
         JsonValue::Object(map) => {
-            if !inside_derived {
+            if !inside_keep {
                 map.remove("guidPath");
             }
 
             let keys: Vec<String> = map.keys().cloned().collect();
             for key in keys {
-                let child_inside = inside_derived || key == "derivedSymbolData";
+                let child_inside =
+                    inside_keep || key == "derivedSymbolData" || key == "symbolOverrides";
                 if let Some(val) = map.get_mut(&key) {
                     transform_inner(val, child_inside)?;
                 }
@@ -64,7 +70,7 @@ fn transform_inner(value: &mut JsonValue, inside_derived: bool) -> Result<()> {
         }
         JsonValue::Array(arr) => {
             for val in arr.iter_mut() {
-                transform_inner(val, inside_derived)?;
+                transform_inner(val, inside_keep)?;
             }
         }
         _ => {}
@@ -147,7 +153,11 @@ mod tests {
     }
 
     #[test]
-    fn test_remove_guid_path_deeply_nested() {
+    fn preserves_guid_path_inside_symbol_overrides() {
+        // symbolOverrides[*].guidPath identifies which descendant of the
+        // master each override targets — renderers walking an instance's
+        // overrides must keep the path to follow it through the cloned
+        // master tree. Same kept-context rule as derivedSymbolData.
         let mut tree = json!({
             "symbolData": {
                 "symbolOverrides": [
@@ -174,10 +184,12 @@ mod tests {
 
         assert!(tree["symbolData"]["symbolOverrides"][0]
             .get("guidPath")
-            .is_none());
+            .is_some());
+        // Once we're inside symbolOverrides the keep flag stays sticky, so
+        // even nested guidPaths under random sub-objects survive.
         assert!(tree["symbolData"]["symbolOverrides"][0]["properties"]["nested"]
             .get("guidPath")
-            .is_none());
+            .is_some());
     }
 
     #[test]

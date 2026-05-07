@@ -209,8 +209,26 @@ pub fn convert(bytes: &[u8], base_dir: Option<&std::path::Path>) -> Result<serde
     // This removes blendMode fields with default "NORMAL" value to reduce output size
     schema::remove_default_blend_mode(&mut document)?;
 
-    // 15. Remove GUID fields (internal Figma identifiers)
-    schema::remove_guid_fields(&mut document)?;
+    // 14b. Extract published shared styles (FILL / TEXT / EFFECT) into a
+    // top-level `styles` map keyed by `"<sessionID>:<localID>"`. Must run
+    // BEFORE `remove_guid_fields` strips the guids that drive that key, AND
+    // before `remove_internal_only_nodes` deletes the canvas the style
+    // nodes live on. Renderers resolve `styleIdForFill: "39:28"` against
+    // this map.
+    schema::extract_styles(&mut document)?;
+
+    // 14c. Normalize `styleIdForFill` / `styleIdForText` / `styleIdForStrokeFill`
+    // references from `{guid: {localID, sessionID}}` to the same `"<sessionID>:<localID>"`
+    // string key used by `extract_styles`. Same timing constraint —
+    // `remove_guid_fields` would otherwise strip the inner guid and leave
+    // an unresolvable empty record.
+    schema::remove_style_ids(&mut document)?;
+
+    // 15. Remove GUID fields (internal Figma identifiers). Use the
+    // outside-masters variant: master subtrees under `components[*]` and
+    // `symbolOverrides[*]` entries keep their guids so renderers can
+    // resolve `symbolOverrides` against the cloned master tree.
+    schema::remove_guid_fields_outside_masters(&mut document)?;
 
     // 16. Remove editInfo fields (version control metadata)
     schema::remove_edit_info_fields(&mut document)?;
@@ -275,9 +293,9 @@ pub fn convert(bytes: &[u8], base_dir: Option<&std::path::Path>) -> Result<serde
     // 36. Remove default uniformScaleFactor values (1.0 is the default)
     schema::remove_default_uniform_scale_factor(&mut document)?;
 
-    // `document` is actually { document, components? } — unpack so the
-    // final JSON has `document` and (optionally) `components` as siblings.
-    let (doc_tree, components) = split_doc_and_components(document);
+    // `document` is actually { document, components?, styles? } — unpack so
+    // the final JSON has `document`, `components`, and `styles` as siblings.
+    let (doc_tree, components, styles) = split_doc_components_styles(document);
 
     let mut output = serde_json::json!({
         "version": parsed.version,
@@ -291,6 +309,11 @@ pub fn convert(bytes: &[u8], base_dir: Option<&std::path::Path>) -> Result<serde
     if let Some(c) = components {
         if let Some(obj) = output.as_object_mut() {
             obj.insert("components".to_string(), c);
+        }
+    }
+    if let Some(s) = styles {
+        if let Some(obj) = output.as_object_mut() {
+            obj.insert("styles".to_string(), s);
         }
     }
 
@@ -309,8 +332,8 @@ pub fn convert(bytes: &[u8], base_dir: Option<&std::path::Path>) -> Result<serde
     // 41. Remove user facing versions (Figma version strings)
     schema::remove_user_facing_versions(&mut output)?;
 
-    // 42. Remove style IDs (Figma shared style references)
-    schema::remove_style_ids(&mut output)?;
+    // 42. (was: remove style IDs) — the rewriting pass now happens at step
+    // 14c, before `remove_guid_fields` strips the inner guid we depend on.
 
     // 43. Remove export settings (asset export configurations)
     schema::remove_export_settings(&mut output)?;
@@ -494,14 +517,20 @@ fn stamp_component_keys(tree: &mut serde_json::Value) {
     }
 }
 
-/// Split `build_tree_with_components`' result back into `(document, components)`.
-fn split_doc_and_components(mut tree: serde_json::Value) -> (serde_json::Value, Option<serde_json::Value>) {
+/// Split `build_tree_with_components`' result + `extract_styles` siblings
+/// back into `(document, components, styles)`.
+fn split_doc_components_styles(
+    mut tree: serde_json::Value,
+) -> (
+    serde_json::Value,
+    Option<serde_json::Value>,
+    Option<serde_json::Value>,
+) {
     let Some(obj) = tree.as_object_mut() else {
-        return (tree, None);
+        return (tree, None, None);
     };
-    let doc = obj
-        .remove("document")
-        .unwrap_or(serde_json::Value::Null);
+    let doc = obj.remove("document").unwrap_or(serde_json::Value::Null);
     let components = obj.remove("components");
-    (doc, components)
+    let styles = obj.remove("styles");
+    (doc, components, styles)
 }

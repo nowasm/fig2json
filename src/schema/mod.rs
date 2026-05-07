@@ -12,7 +12,8 @@ pub use transformations::{
     remove_detached_symbol_id, remove_document_properties, remove_edit_info_fields,
     remove_empty_derived_text_data, remove_empty_font_postscript, remove_empty_objects,
     remove_empty_paint_arrays, remove_export_settings,
-    remove_frame_properties, remove_geometry_fields, remove_guid_fields, remove_guid_paths,
+    remove_frame_properties, remove_geometry_fields, remove_guid_fields,
+    remove_guid_fields_outside_masters, remove_guid_paths,
     remove_image_metadata_fields, remove_internal_only_nodes, remove_invisible_paints,
     remove_layout_aids, remove_overridden_symbol_id, remove_phase_fields, remove_plugin_data,
     remove_rectangle_corner_radii_independent, remove_redundant_corner_radii,
@@ -23,5 +24,6 @@ pub use transformations::{
     remove_text_layout_fields, remove_default_text_line_properties, remove_text_metadata_fields, remove_type,
     remove_default_uniform_scale_factor, remove_user_facing_versions, remove_visible_only_objects, simplify_enums, simplify_text_properties,
     transform_colors_to_css, transform_image_hashes, transform_matrix_to_css,
+    extract_styles,
 };
 pub use tree::{build_tree, build_tree_with_components};
