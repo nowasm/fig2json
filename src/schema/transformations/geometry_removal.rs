@@ -116,7 +116,21 @@ fn transform_inner(value: &mut JsonValue, inside_derived: bool) -> Result<()> {
                 map.remove("fillGeometry");
                 map.remove("strokeGeometry");
                 map.remove("windingRule");
-                map.remove("styleID");
+                // Only strip default-valued (`0`) styleIDs. Non-zero values
+                // identify rich-text run overrides inside `textData.
+                // styleOverrideTable` — `characterStyleIDs[i] == k` says
+                // character `i` uses the entry whose `styleID == k`.
+                // Without that link, downstream renderers can't tell which
+                // characters get the override. Vector geometry's styleID
+                // is virtually always 0 in practice, so this rule still
+                // shrinks canvas.json by the same amount in the common case.
+                let style_id_is_default = match map.get("styleID") {
+                    Some(JsonValue::Number(n)) => n.as_u64() == Some(0) || n.as_i64() == Some(0),
+                    _ => false,
+                };
+                if style_id_is_default {
+                    map.remove("styleID");
+                }
             }
 
             let keys: Vec<String> = map.keys().cloned().collect();
