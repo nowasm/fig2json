@@ -38,33 +38,40 @@ pub fn remove_type(tree: &mut JsonValue) -> Result<()> {
     transform_inner(tree, false)
 }
 
-/// `inside_paints` is true when this value lives inside a `fillPaints` or
-/// `strokePaints` array. The `type` field on a Paint identifies its kind
-/// (SOLID / GRADIENT_LINEAR / GRADIENT_RADIAL / GRADIENT_ANGULAR /
-/// GRADIENT_DIAMOND / IMAGE). Node-level `type` heuristics can be redone
-/// from other fields downstream, but paint kinds aren't inferrable from
-/// the same data (e.g. linear vs radial gradients share the `stops` shape),
-/// so we keep them.
-fn transform_inner(value: &mut JsonValue, inside_paints: bool) -> Result<()> {
+/// `keep_type` is true when this value lives inside an array whose items
+/// need their `type` enum preserved — i.e. paint or effect lists. Paint
+/// kinds (SOLID / GRADIENT_LINEAR / GRADIENT_RADIAL / GRADIENT_ANGULAR /
+/// GRADIENT_DIAMOND / IMAGE) aren't reliably inferrable from the
+/// remaining fields (e.g. linear vs radial gradients share the `stops`
+/// shape). Effect kinds (DROP_SHADOW / INNER_SHADOW / LAYER_BLUR /
+/// BACKGROUND_BLUR / FOREGROUND_BLUR) likewise aren't reliably
+/// inferrable: Figma's binary schema is shared across all effect kinds,
+/// so a `FOREGROUND_BLUR` (Figma's "Layer blur") still carries a default
+/// `offset` and `color` in the binary, which a downstream "infer from
+/// fields" heuristic would mis-classify as `DROP_SHADOW`. Node-level
+/// `type` heuristics, on the other hand, can be redone from other fields,
+/// so we still strip those.
+fn transform_inner(value: &mut JsonValue, keep_type: bool) -> Result<()> {
     match value {
         JsonValue::Object(map) => {
-            if !inside_paints {
+            if !keep_type {
                 map.remove("type");
             }
 
             let keys: Vec<String> = map.keys().cloned().collect();
             for key in keys {
-                let child_inside = inside_paints
+                let child_keep = keep_type
                     || key == "fillPaints"
-                    || key == "strokePaints";
+                    || key == "strokePaints"
+                    || key == "effects";
                 if let Some(val) = map.get_mut(&key) {
-                    transform_inner(val, child_inside)?;
+                    transform_inner(val, child_keep)?;
                 }
             }
         }
         JsonValue::Array(arr) => {
             for val in arr.iter_mut() {
-                transform_inner(val, inside_paints)?;
+                transform_inner(val, keep_type)?;
             }
         }
         _ => {
