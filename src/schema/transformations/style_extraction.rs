@@ -38,6 +38,35 @@ fn guid_key(guid: &JsonValue) -> Option<String> {
     Some(format!("{}:{}", session, local))
 }
 
+/// Fields copied verbatim from a style node into its `styles[<key>]` entry.
+/// Includes everything a downstream renderer might want to apply when a node
+/// references the style — paint arrays, effects, and the full text-style
+/// shape (fontName / fontSize / letterSpacing / lineHeight / etc). Without
+/// the text fields, an "Italic" caption style resolves to a plain colour
+/// fill and the referencing text renders upright.
+const COPIED_STYLE_FIELDS: &[&str] = &[
+    "name",
+    "styleType",
+    "fillPaints",
+    "strokePaints",
+    "effects",
+    "fontName",
+    "fontSize",
+    "fontWeight",
+    "letterSpacing",
+    "lineHeight",
+    "paragraphIndent",
+    "paragraphSpacing",
+    "textAlignHorizontal",
+    "textAlignVertical",
+    "textAutoResize",
+    "textCase",
+    "textDecoration",
+    "textTruncation",
+    "leadingTrim",
+    "maxLines",
+];
+
 fn collect(value: &JsonValue, out: &mut Map<String, JsonValue>) {
     match value {
         JsonValue::Object(map) => {
@@ -49,20 +78,10 @@ fn collect(value: &JsonValue, out: &mut Map<String, JsonValue>) {
                 if let Some(g) = guid {
                     if let Some(key) = guid_key(g) {
                         let mut entry = Map::new();
-                        if let Some(v) = map.get("name") {
-                            entry.insert("name".to_string(), v.clone());
-                        }
-                        if let Some(v) = map.get("styleType") {
-                            entry.insert("styleType".to_string(), v.clone());
-                        }
-                        if let Some(v) = map.get("fillPaints") {
-                            entry.insert("fillPaints".to_string(), v.clone());
-                        }
-                        if let Some(v) = map.get("strokePaints") {
-                            entry.insert("strokePaints".to_string(), v.clone());
-                        }
-                        if let Some(v) = map.get("effects") {
-                            entry.insert("effects".to_string(), v.clone());
+                        for field in COPIED_STYLE_FIELDS {
+                            if let Some(v) = map.get(*field) {
+                                entry.insert((*field).to_string(), v.clone());
+                            }
                         }
                         out.insert(key, JsonValue::Object(entry));
                     }
