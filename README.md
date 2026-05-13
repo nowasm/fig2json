@@ -2,6 +2,8 @@
 
 Convert Figma `.fig` files to clean, optimized JSON for AI-powered design implementation.
 
+> This project is an improved fork of [kreako/fig2json](https://github.com/kreako/fig2json).
+
 ## Overview
 
 `fig2json` extracts and transforms Figma design files into structured JSON, making it easy for LLMs to understand and implement your designs. The tool removes Figma-specific metadata and applies intelligent transformations to produce JSON optimized for HTML/CSS conversion.
@@ -141,7 +143,7 @@ The `canvas.json` file contains the complete design tree with all layers, styles
 
 ### What inspired this project?
 
-This project was inspired by [Evan Wallace's Figma File Parser](https://madebyevan.com/figma/fig-file-parser/).
+This project is an improved fork of [kreako/fig2json](https://github.com/kreako/fig2json), which itself was inspired by [Evan Wallace's Figma File Parser](https://madebyevan.com/figma/fig-file-parser/).
 
 ### How was this built?
 
