@@ -10,6 +10,10 @@ readme = "README.md"
 keywords = ["figma", "converter", "json", "cli", "llm"]
 categories = ["command-line-utilities", "encoding"]
 
+[lib]
+# staticlib: embedded in-process by figmalib via the C ABI in src/capi.rs
+crate-type = ["rlib", "staticlib"]
+
 [dependencies]
 # Error handling
 anyhow = "1.0"

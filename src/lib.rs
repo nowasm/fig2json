@@ -27,6 +27,7 @@
 //! ```
 
 pub mod blobs;
+pub mod capi;
 pub mod error;
 pub mod parser;
 pub mod schema;
