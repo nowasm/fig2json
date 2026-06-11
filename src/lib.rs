@@ -345,11 +345,14 @@ pub fn convert(bytes: &[u8], base_dir: Option<&std::path::Path>) -> Result<serde
     // 45. Remove rectangle corner radii independent (corner radii independent flag)
     schema::remove_rectangle_corner_radii_independent(&mut output)?;
 
-    // 46. Remove constraint properties (horizontalConstraint, verticalConstraint)
-    schema::remove_constraint_properties(&mut output)?;
+    // 46. (disabled) Constraint properties (horizontalConstraint, verticalConstraint)
+    // are kept: consumers like figmalib need them for responsive layout.
+    // schema::remove_constraint_properties(&mut output)?;
 
-    // 47. Remove scroll/resize properties (scrollBehavior, resizeToFit)
-    schema::remove_scroll_resize_properties(&mut output)?;
+    // 47. (disabled) Scroll/resize properties (scrollBehavior, resizeToFit)
+    // are kept: resizeToFit marks Figma GROUPs (stored as FRAME in .fig) —
+    // consumers like figmalib need it because groups never clip content.
+    // schema::remove_scroll_resize_properties(&mut output)?;
 
     // 48. Remove layout aids (guides, layoutGrids)
     schema::remove_layout_aids(&mut output)?;
@@ -372,23 +375,23 @@ pub fn convert(bytes: &[u8], base_dir: Option<&std::path::Path>) -> Result<serde
     // 54. Remove empty paint arrays (remove empty fillPaints and strokePaints arrays)
     schema::remove_empty_paint_arrays(&mut output)?;
 
-    // 55. Remove redundant padding properties (stackPaddingRight/stackPaddingBottom when axis-based padding exists)
-    schema::remove_redundant_padding(&mut output)?;
-
-    // 56. Remove stack child properties (stackChildAlignSelf, stackChildPrimaryGrow)
-    schema::remove_stack_child_properties(&mut output)?;
-
-    // 57. Remove stack sizing properties (stackCounterSizing, stackPrimarySizing)
-    schema::remove_stack_sizing_properties(&mut output)?;
-
-    // 58. Remove stack alignment properties (stackCounterAlignItems, stackPrimaryAlignItems)
-    schema::remove_stack_align_items(&mut output)?;
+    // 55-58. (disabled) Auto-layout stack properties (padding right/bottom,
+    // stackChild*, stack*Sizing, stack*AlignItems) are kept for responsive
+    // layout consumers. stackHorizontalPadding/stackVerticalPadding are the
+    // LEFT/TOP paddings; stackPaddingRight/stackPaddingBottom are not
+    // redundant when the padding is asymmetric.
+    // schema::remove_redundant_padding(&mut output)?;
+    // schema::remove_stack_child_properties(&mut output)?;
+    // schema::remove_stack_sizing_properties(&mut output)?;
+    // schema::remove_stack_align_items(&mut output)?;
 
     // 59. Remove symbolID fields containing only localID and/or sessionID
     schema::remove_symbol_id_fields(&mut output)?;
 
-    // 60. Remove type field from all nodes
-    schema::remove_type(&mut output)?;
+    // 60. (disabled) The node type (FRAME/SYMBOL/STATE_GROUP/INSTANCE/...) is
+    // kept: consumers like figmalib need it to identify components, variant
+    // sets and instances without fragile structural inference.
+    // schema::remove_type(&mut output)?;
 
     // 61. Remove objects that only contain a visible property
     schema::remove_visible_only_objects(&mut output)?;
